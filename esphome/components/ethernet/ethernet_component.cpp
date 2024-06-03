@@ -107,19 +107,22 @@ void EthernetComponent::setup() {
 
 #if USE_ESP_IDF && (ESP_IDF_VERSION_MAJOR >= 5)
   eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(host, &devcfg);
+  eth_dm9051_config_t dm9051_config = ETH_DM9051_DEFAULT_CONFIG(host, &devcfg);
 #else
   spi_device_handle_t spi_handle = nullptr;
   err = spi_bus_add_device(host, &devcfg, &spi_handle);
   ESPHL_ERROR_CHECK(err, "SPI bus add device error");
 
   eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
+  eth_dm9051_config_t dm9051_config = ETH_DM9051_DEFAULT_CONFIG(spi_handle);
 #endif
   w5500_config.int_gpio_num = this->interrupt_pin_;
+  dm9051_config.int_gpio_num = this->interrupt_pin_;
   phy_config.phy_addr = this->phy_addr_spi_;
   phy_config.reset_gpio_num = this->reset_pin_;
 
-  esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
-#else
+  esp_eth_mac_t *mac = nullptr;
+#else  // USE_ETHERNET_SPI
   phy_config.phy_addr = this->phy_addr_;
   phy_config.reset_gpio_num = this->power_pin_;
 
@@ -139,7 +142,7 @@ void EthernetComponent::setup() {
 
   esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&mac_config);
 #endif
-#endif
+#endif  // USE_ETHERNET_SPI
 
   switch (this->type_) {
 #if CONFIG_ETH_USE_ESP32_EMAC
@@ -175,7 +178,13 @@ void EthernetComponent::setup() {
 #endif
 #ifdef USE_ETHERNET_SPI
     case ETHERNET_TYPE_W5500: {
+      mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
       this->phy_ = esp_eth_phy_new_w5500(&phy_config);
+      break;
+    }
+    case ETHERNET_TYPE_DM9051: {
+      mac = esp_eth_mac_new_dm9051(&dm9051_config, &mac_config);
+      this->phy_ = esp_eth_phy_new_dm9051(&phy_config);
       break;
     }
 #endif
@@ -299,6 +308,10 @@ void EthernetComponent::dump_config() {
 
     case ETHERNET_TYPE_W5500:
       eth_type = "W5500";
+      break;
+
+    case ETHERNET_TYPE_DM9051:
+      eth_type = "DM9051";
       break;
 
     default:
