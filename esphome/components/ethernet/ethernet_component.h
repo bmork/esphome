@@ -4,6 +4,7 @@
 #include "esphome/core/defines.h"
 #include "esphome/core/hal.h"
 #include "esphome/components/network/ip_address.h"
+#include "esphome/components/spi/spi.h"
 
 #ifdef USE_ESP32
 
@@ -48,7 +49,11 @@ enum class EthernetComponentState {
   CONNECTED,
 };
 
-class EthernetComponent : public Component {
+class EthernetComponent : public Component,
+#ifdef USE_ETHERNET_SPI
+			  public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_8MHZ>
+#endif
+{
  public:
   EthernetComponent();
   void setup() override;
@@ -60,21 +65,16 @@ class EthernetComponent : public Component {
   bool is_connected();
 
 #ifdef USE_ETHERNET_SPI
-  void set_clk_pin(uint8_t clk_pin);
-  void set_miso_pin(uint8_t miso_pin);
-  void set_mosi_pin(uint8_t mosi_pin);
-  void set_cs_pin(uint8_t cs_pin);
   void set_interrupt_pin(uint8_t interrupt_pin);
   void set_reset_pin(uint8_t reset_pin);
-  void set_clock_speed(int clock_speed);
 #else
-  void set_phy_addr(uint8_t phy_addr);
   void set_power_pin(int power_pin);
   void set_mdc_pin(uint8_t mdc_pin);
   void set_mdio_pin(uint8_t mdio_pin);
   void set_clk_mode(emac_rmii_clock_mode_t clk_mode, emac_rmii_clock_gpio_t clk_gpio);
   void add_phy_register(PHYRegister register_value);
 #endif
+  void set_phy_addr(uint8_t phy_addr);
   void set_type(EthernetType type);
   void set_manual_ip(const ManualIP &manual_ip);
 
@@ -104,16 +104,20 @@ class EthernetComponent : public Component {
 
   std::string use_address_;
 #ifdef USE_ETHERNET_SPI
-  uint8_t clk_pin_;
-  uint8_t miso_pin_;
-  uint8_t mosi_pin_;
-  uint8_t cs_pin_;
+  /// @brief Custom driver SPI Initialization
+  static void *spi_init(const void *spi_config);
+  /// @brief Custom driver De-initialization
+  static esp_err_t spi_deinit(void *spi_ctx);
+  /// @brief Custom driver SPI read
+  static esp_err_t spi_read(void *spi_ctx, uint32_t cmd, uint32_t addr, void *data, uint32_t data_len);
+  /// @brief Custom driver SPI write
+  static esp_err_t spi_write(void *spi_ctx, uint32_t cmd, uint32_t addr, const void *data, uint32_t data_len);
+
+  size_t spi_cmd_bits;
+  size_t spi_addr_bits;
   uint8_t interrupt_pin_;
   int reset_pin_{-1};
-  int phy_addr_spi_{-1};
-  int clock_speed_;
 #else
-  uint8_t phy_addr_{0};
   int power_pin_{-1};
   uint8_t mdc_pin_{23};
   uint8_t mdio_pin_{18};
@@ -121,6 +125,7 @@ class EthernetComponent : public Component {
   emac_rmii_clock_gpio_t clk_gpio_{EMAC_CLK_IN_GPIO};
   std::vector<PHYRegister> phy_registers_{};
 #endif
+  uint8_t phy_addr_{0};
   EthernetType type_{ETHERNET_TYPE_UNKNOWN};
   optional<ManualIP> manual_ip_{};
 

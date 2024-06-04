@@ -20,10 +20,6 @@ from esphome.const import (
     CONF_SUBNET,
     CONF_DNS1,
     CONF_DNS2,
-    CONF_CLK_PIN,
-    CONF_MISO_PIN,
-    CONF_MOSI_PIN,
-    CONF_CS_PIN,
     CONF_INTERRUPT_PIN,
     CONF_RESET_PIN,
     CONF_SPI,
@@ -33,6 +29,7 @@ from esphome.const import (
 from esphome.core import CORE, coroutine_with_priority
 from esphome.components.network import IPAddress
 from esphome.components.spi import get_spi_interface, CONF_INTERFACE_INDEX
+from esphome.components import spi
 
 CONFLICTS_WITH = ["wifi"]
 DEPENDENCIES = ["esp32"]
@@ -113,6 +110,7 @@ def _validate(config):
 BASE_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(EthernetComponent),
+        cv.Optional(CONF_PHY_ADDR, default=0): cv.int_range(min=0, max=31),
         cv.Optional(CONF_MANUAL_IP): MANUAL_IP_SCHEMA,
         cv.Optional(CONF_DOMAIN, default=".local"): cv.domain_name,
         cv.Optional(CONF_USE_ADDRESS): cv.string_strict,
@@ -138,7 +136,6 @@ RMII_SCHEMA = BASE_SCHEMA.extend(
             cv.Optional(CONF_CLK_MODE, default="GPIO0_IN"): cv.enum(
                 CLK_MODES, upper=True, space="_"
             ),
-            cv.Optional(CONF_PHY_ADDR, default=0): cv.int_range(min=0, max=31),
             cv.Optional(CONF_POWER_PIN): pins.internal_gpio_output_pin_number,
             cv.Optional(CONF_PHY_REGISTERS): cv.ensure_list(PHY_REGISTER_SCHEMA),
         }
@@ -148,17 +145,11 @@ RMII_SCHEMA = BASE_SCHEMA.extend(
 SPI_SCHEMA = BASE_SCHEMA.extend(
     cv.Schema(
         {
-            cv.Required(CONF_CLK_PIN): pins.internal_gpio_output_pin_number,
-            cv.Required(CONF_MISO_PIN): pins.internal_gpio_input_pin_number,
-            cv.Required(CONF_MOSI_PIN): pins.internal_gpio_output_pin_number,
-            cv.Required(CONF_CS_PIN): pins.internal_gpio_output_pin_number,
             cv.Optional(CONF_INTERRUPT_PIN): pins.internal_gpio_input_pin_number,
             cv.Optional(CONF_RESET_PIN): pins.internal_gpio_output_pin_number,
-            cv.Optional(CONF_CLOCK_SPEED, default="26.67MHz"): cv.All(
-                cv.frequency, cv.int_range(int(8e6), int(80e6))
-            ),
         }
-    ),
+    )
+    .extend(spi.spi_device_schema(False, "10MHz"))
 )
 
 CONFIG_SCHEMA = cv.All(
@@ -178,29 +169,6 @@ CONFIG_SCHEMA = cv.All(
     ),
     _validate,
 )
-
-
-def _final_validate(config):
-    if config[CONF_TYPE] not in SPI_ETHERNET_TYPES:
-        return
-    if spi_configs := fv.full_config.get().get(CONF_SPI):
-        variant = get_esp32_variant()
-        if variant in (VARIANT_ESP32C3, VARIANT_ESP32S2, VARIANT_ESP32S3):
-            spi_host = "SPI2_HOST"
-        else:
-            spi_host = "SPI3_HOST"
-        for spi_conf in spi_configs:
-            if (index := spi_conf.get(CONF_INTERFACE_INDEX)) is not None:
-                interface = get_spi_interface(index)
-                if interface == spi_host:
-                    raise cv.Invalid(
-                        f"`spi` component is using interface '{interface}'. "
-                        f"To use {config[CONF_TYPE]}, you must change the `interface` on the `spi` component.",
-                    )
-
-
-FINAL_VALIDATE_SCHEMA = _final_validate
-
 
 def manual_ip(config):
     return cg.StructInitializer(
@@ -228,15 +196,11 @@ async def to_code(config):
     await cg.register_component(var, config)
 
     if config[CONF_TYPE] in SPI_ETHERNET_TYPES:
-        cg.add(var.set_clk_pin(config[CONF_CLK_PIN]))
-        cg.add(var.set_miso_pin(config[CONF_MISO_PIN]))
-        cg.add(var.set_mosi_pin(config[CONF_MOSI_PIN]))
-        cg.add(var.set_cs_pin(config[CONF_CS_PIN]))
+        await spi.register_spi_device(var, config)
         if CONF_INTERRUPT_PIN in config:
             cg.add(var.set_interrupt_pin(config[CONF_INTERRUPT_PIN]))
         if CONF_RESET_PIN in config:
             cg.add(var.set_reset_pin(config[CONF_RESET_PIN]))
-        cg.add(var.set_clock_speed(config[CONF_CLOCK_SPEED]))
 
         cg.add_define("USE_ETHERNET_SPI")
         if CORE.using_esp_idf:
@@ -244,7 +208,6 @@ async def to_code(config):
             add_idf_sdkconfig_option("CONFIG_ETH_SPI_ETHERNET_W5500", True)
             add_idf_sdkconfig_option("CONFIG_ETH_SPI_ETHERNET_DM9051", True)
     else:
-        cg.add(var.set_phy_addr(config[CONF_PHY_ADDR]))
         cg.add(var.set_mdc_pin(config[CONF_MDC_PIN]))
         cg.add(var.set_mdio_pin(config[CONF_MDIO_PIN]))
         cg.add(var.set_clk_mode(*CLK_MODES[config[CONF_CLK_MODE]]))
@@ -258,6 +221,7 @@ async def to_code(config):
             )
             cg.add(var.add_phy_register(reg))
 
+    cg.add(var.set_phy_addr(config[CONF_PHY_ADDR]))
     cg.add(var.set_type(ETHERNET_TYPES[config[CONF_TYPE]]))
     cg.add(var.set_use_address(config[CONF_USE_ADDRESS]))
 

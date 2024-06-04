@@ -45,36 +45,6 @@ void EthernetComponent::setup() {
   }
 
   esp_err_t err;
-
-#ifdef USE_ETHERNET_SPI
-  // Install GPIO ISR handler to be able to service SPI Eth modules interrupts
-  gpio_install_isr_service(0);
-
-  spi_bus_config_t buscfg = {
-      .mosi_io_num = this->mosi_pin_,
-      .miso_io_num = this->miso_pin_,
-      .sclk_io_num = this->clk_pin_,
-      .quadwp_io_num = -1,
-      .quadhd_io_num = -1,
-      .data4_io_num = -1,
-      .data5_io_num = -1,
-      .data6_io_num = -1,
-      .data7_io_num = -1,
-      .max_transfer_sz = 0,
-      .flags = 0,
-      .intr_flags = 0,
-  };
-
-#if defined(USE_ESP32_VARIANT_ESP32C3) || defined(USE_ESP32_VARIANT_ESP32S2) || defined(USE_ESP32_VARIANT_ESP32S3)
-  auto host = SPI2_HOST;
-#else
-  auto host = SPI3_HOST;
-#endif
-
-  err = spi_bus_initialize(host, &buscfg, SPI_DMA_CH_AUTO);
-  ESPHL_ERROR_CHECK(err, "SPI bus initialize error");
-#endif
-
   err = esp_netif_init();
   ESPHL_ERROR_CHECK(err, "ETH netif init error");
   err = esp_event_loop_create_default();
@@ -86,44 +56,34 @@ void EthernetComponent::setup() {
   // Init MAC and PHY configs to default
   eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
   eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+  phy_config.phy_addr = this->phy_addr_;
 
 #ifdef USE_ETHERNET_SPI  // Configure SPI interface and Ethernet driver for specific SPI module
-  spi_device_interface_config_t devcfg = {
-      .command_bits = 0,
-      .address_bits = 0,
-      .dummy_bits = 0,
-      .mode = 0,
-      .duty_cycle_pos = 0,
-      .cs_ena_pretrans = 0,
-      .cs_ena_posttrans = 0,
-      .clock_speed_hz = this->clock_speed_,
-      .input_delay_ns = 0,
-      .spics_io_num = this->cs_pin_,
-      .flags = 0,
-      .queue_size = 20,
-      .pre_cb = nullptr,
-      .post_cb = nullptr,
-  };
+  // Install GPIO ISR handler to be able to service SPI Eth modules interrupts
+  gpio_install_isr_service(0);
 
-#if USE_ESP_IDF && (ESP_IDF_VERSION_MAJOR >= 5)
-  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(host, &devcfg);
-  eth_dm9051_config_t dm9051_config = ETH_DM9051_DEFAULT_CONFIG(host, &devcfg);
-#else
-  spi_device_handle_t spi_handle = nullptr;
-  err = spi_bus_add_device(host, &devcfg, &spi_handle);
-  ESPHL_ERROR_CHECK(err, "SPI bus add device error");
-
-  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
-  eth_dm9051_config_t dm9051_config = ETH_DM9051_DEFAULT_CONFIG(spi_handle);
-#endif
+  eth_w5500_config_t w5500_config = {};
+  eth_dm9051_config_t dm9051_config = {};
   w5500_config.int_gpio_num = this->interrupt_pin_;
+  w5500_config.custom_spi_driver = {
+    .config = this,
+    .init = &EthernetComponent::spi_init,
+    .deinit = &EthernetComponent::spi_deinit,
+    .read = &EthernetComponent::spi_read,
+    .write = &EthernetComponent::spi_write,
+  };
   dm9051_config.int_gpio_num = this->interrupt_pin_;
-  phy_config.phy_addr = this->phy_addr_spi_;
+  dm9051_config.custom_spi_driver = {
+    .config = this,
+    .init = &EthernetComponent::spi_init,
+    .deinit = &EthernetComponent::spi_deinit,
+    .read = &EthernetComponent::spi_read,
+    .write = &EthernetComponent::spi_write,
+  };
   phy_config.reset_gpio_num = this->reset_pin_;
 
   esp_eth_mac_t *mac = nullptr;
-#else  // USE_ETHERNET_SPI
-  phy_config.phy_addr = this->phy_addr_;
+#else // USE_ETHERNET_SPI
   phy_config.reset_gpio_num = this->power_pin_;
 
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -142,7 +102,7 @@ void EthernetComponent::setup() {
 
   esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&mac_config);
 #endif
-#endif  // USE_ETHERNET_SPI
+#endif // USE_ETHERNET_SPI
 
   switch (this->type_) {
 #if CONFIG_ETH_USE_ESP32_EMAC
@@ -179,12 +139,18 @@ void EthernetComponent::setup() {
 #ifdef USE_ETHERNET_SPI
     case ETHERNET_TYPE_W5500: {
       mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
+      phy_config.phy_addr = -1;
       this->phy_ = esp_eth_phy_new_w5500(&phy_config);
+      this->spi_cmd_bits = 16;  // Actually it's the address phase in W5500 SPI frame
+      this->spi_addr_bits = 8;  // Actually it's the control phase in W5500 SPI frame
       break;
     }
     case ETHERNET_TYPE_DM9051: {
       mac = esp_eth_mac_new_dm9051(&dm9051_config, &mac_config);
+      phy_config.phy_addr = -1;
       this->phy_ = esp_eth_phy_new_dm9051(&phy_config);
+      this->spi_cmd_bits = 1;
+      this->spi_addr_bits = 7;
       break;
     }
 #endif
@@ -322,21 +288,19 @@ void EthernetComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "Ethernet:");
   this->dump_connect_params_();
 #ifdef USE_ETHERNET_SPI
-  ESP_LOGCONFIG(TAG, "  CLK Pin: %u", this->clk_pin_);
-  ESP_LOGCONFIG(TAG, "  MISO Pin: %u", this->miso_pin_);
-  ESP_LOGCONFIG(TAG, "  MOSI Pin: %u", this->mosi_pin_);
-  ESP_LOGCONFIG(TAG, "  CS Pin: %u", this->cs_pin_);
+  LOG_PIN("  CS pin: ", this->cs_);
+  ESP_LOGCONFIG(TAG, "  Mode: %d", this->mode_);
+  ESP_LOGCONFIG(TAG, "  Data rate: %" PRId32 "MHz", this->data_rate_ / 1000000);
   ESP_LOGCONFIG(TAG, "  IRQ Pin: %u", this->interrupt_pin_);
   ESP_LOGCONFIG(TAG, "  Reset Pin: %d", this->reset_pin_);
-  ESP_LOGCONFIG(TAG, "  Clock Speed: %d MHz", this->clock_speed_ / 1000000);
 #else
   if (this->power_pin_ != -1) {
     ESP_LOGCONFIG(TAG, "  Power Pin: %u", this->power_pin_);
   }
   ESP_LOGCONFIG(TAG, "  MDC Pin: %u", this->mdc_pin_);
   ESP_LOGCONFIG(TAG, "  MDIO Pin: %u", this->mdio_pin_);
-  ESP_LOGCONFIG(TAG, "  PHY addr: %u", this->phy_addr_);
 #endif
+  ESP_LOGCONFIG(TAG, "  PHY addr: %u", this->phy_addr_);
   ESP_LOGCONFIG(TAG, "  Type: %s", eth_type);
 }
 
@@ -524,15 +488,9 @@ void EthernetComponent::dump_connect_params_() {
 }
 
 #ifdef USE_ETHERNET_SPI
-void EthernetComponent::set_clk_pin(uint8_t clk_pin) { this->clk_pin_ = clk_pin; }
-void EthernetComponent::set_miso_pin(uint8_t miso_pin) { this->miso_pin_ = miso_pin; }
-void EthernetComponent::set_mosi_pin(uint8_t mosi_pin) { this->mosi_pin_ = mosi_pin; }
-void EthernetComponent::set_cs_pin(uint8_t cs_pin) { this->cs_pin_ = cs_pin; }
 void EthernetComponent::set_interrupt_pin(uint8_t interrupt_pin) { this->interrupt_pin_ = interrupt_pin; }
 void EthernetComponent::set_reset_pin(uint8_t reset_pin) { this->reset_pin_ = reset_pin; }
-void EthernetComponent::set_clock_speed(int clock_speed) { this->clock_speed_ = clock_speed; }
 #else
-void EthernetComponent::set_phy_addr(uint8_t phy_addr) { this->phy_addr_ = phy_addr; }
 void EthernetComponent::set_power_pin(int power_pin) { this->power_pin_ = power_pin; }
 void EthernetComponent::set_mdc_pin(uint8_t mdc_pin) { this->mdc_pin_ = mdc_pin; }
 void EthernetComponent::set_mdio_pin(uint8_t mdio_pin) { this->mdio_pin_ = mdio_pin; }
@@ -542,6 +500,7 @@ void EthernetComponent::set_clk_mode(emac_rmii_clock_mode_t clk_mode, emac_rmii_
 }
 void EthernetComponent::add_phy_register(PHYRegister register_value) { this->phy_registers_.push_back(register_value); }
 #endif
+void EthernetComponent::set_phy_addr(uint8_t phy_addr) { this->phy_addr_ = phy_addr; }
 void EthernetComponent::set_type(EthernetType type) { this->type_ = type; }
 void EthernetComponent::set_manual_ip(const ManualIP &manual_ip) { this->manual_ip_ = manual_ip; }
 
@@ -597,8 +556,46 @@ bool EthernetComponent::powerdown() {
   return true;
 }
 
-#ifndef USE_ETHERNET_SPI
+#ifdef USE_ETHERNET_SPI
 
+void *EthernetComponent::spi_init(const void *spi_config) {
+  EthernetComponent *parent = (EthernetComponent *)spi_config;
+
+  ESP_LOGD(TAG, "spi_init()");
+  parent->spi_setup();
+  return (void *)parent;
+}
+
+esp_err_t EthernetComponent::spi_deinit(void *spi_ctx) {
+  EthernetComponent *parent = (EthernetComponent *)spi_ctx;
+
+  ESP_LOGD(TAG, "spi_deinit()");
+  parent->spi_teardown();
+  return ESP_OK;
+}
+
+esp_err_t EthernetComponent::spi_read(void *spi_ctx, uint32_t cmd, uint32_t addr, void *data, uint32_t data_len) {
+  EthernetComponent *parent = (EthernetComponent *)spi_ctx;
+  
+  parent->enable();
+  parent->write_cmd_addr_data(parent->spi_cmd_bits, cmd, parent->spi_addr_bits, addr, nullptr, 0);
+  parent->read_array((uint8_t *)data, data_len);
+  parent->disable();
+  ESP_LOGVV(TAG, "  spi_read(cmd=%lu, addr=0x%08lx) : %s", cmd, addr, format_hex_pretty((const uint8_t *)data, data_len).c_str());
+  return ESP_OK;
+}
+
+esp_err_t EthernetComponent::spi_write(void *spi_ctx, uint32_t cmd, uint32_t addr, const void *data, uint32_t data_len) {
+  EthernetComponent *parent = (EthernetComponent *)spi_ctx;
+
+  parent->enable();
+  parent->write_cmd_addr_data(parent->spi_cmd_bits, cmd, parent->spi_addr_bits, addr, (const uint8_t *)data, data_len);
+  parent->disable();
+  ESP_LOGVV(TAG, "  spi_write(cmd=%lu, addr=0x%08lx) : %s", cmd, addr, format_hex_pretty((const uint8_t *)data, data_len).c_str());
+  return ESP_OK;
+}
+
+#else
 constexpr uint8_t KSZ80XX_PC2R_REG_ADDR = 0x1F;
 
 void EthernetComponent::ksz8081_set_clock_reference_(esp_eth_mac_t *mac) {

@@ -273,7 +273,7 @@ def _esp_idf_check_versions(value):
     value = value.copy()
     lookups = {
         "dev": (cv.Version(5, 1, 2), "https://github.com/espressif/esp-idf.git"),
-        "latest": (cv.Version(5, 1, 2), None),
+        "latest": (cv.Version(5, 2, 1), None),
         "recommended": (RECOMMENDED_ESP_IDF_FRAMEWORK_VERSION, None),
     }
 
