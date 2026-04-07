@@ -352,7 +352,11 @@ void EthernetComponent::ethernet_lazy_init_() {
   err = esp_eth_driver_install(&eth_config, &this->eth_handle_);
   ESPHL_ERROR_CHECK(err, "ETH driver install error");
 
-#ifndef USE_ETHERNET_SPI
+#ifdef USE_ETHERNET_SPI
+  // enable Energy Efficient Ethernet
+  err = esp_eth_ioctl(this->eth_handle_, (esp_eth_io_cmd_t)ETH_MAC_SPI_CMD_S_EEE, &this->eee_);
+  ESPHL_ERROR_CHECK(err, "ETH_MAC_SPI_CMD_S_EEE error");
+#else
 #ifdef USE_ETHERNET_KSZ8081
   if (this->type_ == ETHERNET_TYPE_KSZ8081RNA && this->clk_mode_ == EMAC_CLK_OUT) {
     // KSZ8081RNA default is incorrect. It expects a 25MHz clock instead of the 50MHz we provide.
@@ -532,7 +536,10 @@ void EthernetComponent::dump_config() {
                 "  PHY addr: %u",
                 this->clk_pin_, this->mdc_pin_, this->mdio_pin_, this->phy_addr_);
 #endif
-  ESP_LOGCONFIG(TAG, "  Type: %s", eth_type);
+  ESP_LOGCONFIG(TAG,
+		"  Energy Efficent Ethernet: %s\n"
+		"  Type: %s",
+		YESNO(this->eee_), eth_type);
 }
 
 network::IPAddresses EthernetComponent::get_ip_addresses() {
@@ -895,6 +902,8 @@ bool EthernetComponent::powerdown() {
   }
   return true;
 }
+
+void EthernetComponent::set_eee(bool enable) { this->eee_ = enable; }
 
 #ifndef USE_ETHERNET_SPI
 

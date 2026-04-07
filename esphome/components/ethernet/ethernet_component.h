@@ -153,6 +153,7 @@ class EthernetComponent final : public Component {
   eth_duplex_t get_duplex_mode();
   eth_speed_t get_link_speed();
   bool powerdown();
+  void set_eee(bool enable);
 
 #ifdef USE_ESP32
   esp_eth_handle_t get_eth_handle() const { return this->eth_handle_; }
@@ -305,6 +306,7 @@ class EthernetComponent final : public Component {
   // Group all uint8_t types together (enums and bools)
   EthernetType type_{ETHERNET_TYPE_UNKNOWN};
   EthernetComponentState state_{EthernetComponentState::STOPPED};
+  bool eee_{false};
   bool started_{false};
   bool connected_{false};
   bool got_ipv4_address_{false};
